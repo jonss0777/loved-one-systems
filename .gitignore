@@ -2,3 +2,4 @@ firmware/secrets.h
 */build
 */vcpkg_installed
 .vscode
+config.json

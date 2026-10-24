@@ -15,7 +15,8 @@ const uint16_t pi_port = 81;
 WebSocketsClient webSocket;
 
 // Pin definitions
-const int buttonPin = 4;      // Single Button Signal Pin
+const int buttonPin = 4;     // Single Button Signal Pin
+const int powerPin = 21;     // Power pin for button (declared to fix setup reference)
 
 // Dynamic State Variables controlled by Server & Button
 int currentSensorType = 1;    // 1: Temp/Ultrasonic (States: 0, 1, 2), 2: CO2 (States: 0, 1)
@@ -24,14 +25,24 @@ int buttonValue = 0;          // Current value being cycled
 // Edge detection variable for debouncing
 bool lastButtonState = LOW;
 
+// Connection tracker flag
+bool isConnected = false;
+
+// Heartbeat tracking variables
+unsigned long lastHeartbeatTime = 0;
+const unsigned long heartbeatInterval = 30000; // 30 seconds in milliseconds
+
 // WebSocket Event Handler (Receives commands from server)
 void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
     switch(type) {
         case WStype_DISCONNECTED:
             Serial.println("[WSc] Disconnected!");
+            isConnected = false;
             break;
+            
         case WStype_CONNECTED:
             Serial.printf("[WSc] Connected to server at url: %s\n", payload);
+            isConnected = true;
             
             // Send a valid JSON payload on connection instead of plain text
             {
@@ -39,6 +50,7 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
                 webSocket.sendTXT(initJson);
             }
             break;
+            
         case WStype_TEXT:
             {
                 Serial.printf("[WSc] Message from server: %s\n", payload);
@@ -58,12 +70,13 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
                 }
             }
             break;
+            
         default:
             break;
     }
 }
 
-// Task running on Core 1 (WebSocket Client Loop + Single Button Monitor)
+// Task running on Core 1 (WebSocket Client Loop + Single Button Monitor + Heartbeat)
 void core1Task(void *pvParameters) {
     webSocket.begin(pi_ip, pi_port, "/");
     webSocket.onEvent(webSocketEvent);
@@ -75,7 +88,18 @@ void core1Task(void *pvParameters) {
         // 1. Maintain WebSocket client loop
         webSocket.loop();
 
-        // 2. Read single button pin (Active HIGH)
+        // 2. Send Heartbeat every 30 seconds (if connected)
+        unsigned long currentMillis = millis();
+        if (isConnected && (currentMillis - lastHeartbeatTime >= heartbeatInterval)) {
+            lastHeartbeatTime = currentMillis;
+            
+            // Send lightweight JSON heartbeat message
+            String heartbeatJson = "{\"type\": \"heartbeat\"}";
+            webSocket.sendTXT(heartbeatJson);
+            Serial.println("[WSc] Sent heartbeat to server.");
+        }
+
+        // 3. Read single button pin (Active HIGH)
         bool reading = digitalRead(buttonPin);
 
         // --- Single Button Logic with Dynamic Behavior ---

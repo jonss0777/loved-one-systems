@@ -1,5 +1,6 @@
 #include <drogon/drogon.h>
 #include <drogon/WebSocketController.h>
+#include <drogon/orm/DbClient.h>
 #include <gst/gst.h>
 #include <iostream>
 #include <json/json.h>
@@ -43,7 +44,7 @@ public:
         }
     }
 
-    // Called when the ESP32 sends text payloads (JSON containing sensor_type and value)
+    // Called when the ESP32 sends text payloads (JSON containing heartbeats or sensor values)
     void handleNewMessage(const drogon::WebSocketConnectionPtr& wsConnPtr, 
                           std::string&& message, 
                           const drogon::WebSocketMessageType& type) override {
@@ -59,7 +60,32 @@ public:
                 std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
 
                 if (reader->parse(message.c_str(), message.c_str() + message.size(), &root, &errs)) {
-                    if (root.isMember("sensor_type") && root.isMember("value")) {
+                    
+                    // 1. Handle Heartbeat Message from ESP32
+                    if (root.isMember("type") && root["type"].asString() == "heartbeat") {
+                        std::string clientIp = wsConnPtr->peerAddr().toIp();
+                        std::cout << "[WS Server] Heartbeat received from IP: " << clientIp << std::endl;
+
+                        // Log heartbeat to PostgreSQL asynchronously
+                        auto dbClient = drogon::app().getDbClient();
+                        if (dbClient) {
+                            dbClient->execSqlAsync(
+                                "INSERT INTO device_logs (ip_address, event_type, created_at) VALUES ($1, $2, NOW())",
+                                [](const drogon::orm::Result &result) {
+                                    // Successfully logged
+                                },
+                                [](const drogon::orm::DrogonDbException &e) {
+                                    std::cerr << "[DB Error] Failed to log heartbeat: " << e.base().what() << std::endl;
+                                },
+                                clientIp,
+                                "heartbeat"
+                            );
+                        } else {
+                            std::cerr << "[DB Error] Database client not configured or unavailable." << std::endl;
+                        }
+                    }
+                    // 2. Handle Sensor Value payloads
+                    else if (root.isMember("sensor_type") && root.isMember("value")) {
                         int sensorType = root["sensor_type"].asInt();
                         int value = root["value"].asInt();
 
@@ -87,7 +113,7 @@ public:
                     std::cerr << "Failed to parse incoming JSON payload: " << errs << std::endl;
                 }
             } else {
-                // Handle plain text messages (like the welcome string)
+                // Handle plain text messages
                 std::cout << "[WS Server] Handling plain text message: " << message << std::endl;
             }
         }
@@ -158,8 +184,11 @@ int main(int argc, char* argv[]) {
         {drogon::Get}
     );
 
-    drogon::app().addListener("0.0.0.0", 8080);
-    drogon::app().addListener("0.0.0.0", 81);
+    // Optional: Load configuration file (which includes PostgreSQL connection setup)
+    drogon::app().loadConfigFile("../config.json");
+
+    // drogon::app().addListener("0.0.0.0", 8080);
+    // drogon::app().addListener("0.0.0.0", 81);
     
     std::cout << "Drogon server running..." << std::endl;
     drogon::app().run();
