@@ -1,0 +1,16 @@
+{
+  "name": "drogon-gstreamer-app",
+  "version": "1.0.0",
+  "dependencies": [
+    "drogon",
+    "pkgconf",
+    {
+      "name": "gstreamer",
+      "features": [
+        "plugins-base",
+        "plugins-good",
+        "plugins-bad"
+      ]
+    }
+  ]
+}
