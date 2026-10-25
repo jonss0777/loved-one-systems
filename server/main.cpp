@@ -73,10 +73,10 @@ public:
                     else if (root.isMember("type") && root["type"].asString() == "heartbeat") {
                         std::cout << "[WS Server] Heartbeat received from IP: " << clientIp << std::endl;
 
-                        // Log heartbeat (Ensure device_logs table exists or route to appropriate table)
+                        // Log heartbeat (Ensure heartbeats_logs table exists or route to appropriate table)
                         if (dbClient) {
                             dbClient->execSqlAsync(
-                                "INSERT INTO device_logs (ip_address, event_type, created_at) VALUES ($1, $2, NOW())",
+                                "INSERT INTO heartbeats_logs (ip_address, event_type, created_at) VALUES ($1, $2, NOW())",
                                 [](const drogon::orm::Result &result) {},
                                 [](const drogon::orm::DrogonDbException &e) {
                                     std::cerr << "[DB Error] Failed to log heartbeat: " << e.base().what() << std::endl;
