@@ -15,7 +15,7 @@ class FirmwareWebSocketServer : public drogon::WebSocketController<FirmwareWebSo
 public:
     // Called when the ESP32 establishes a new connection
     void handleNewConnection(const drogon::HttpRequestPtr& req, 
-                             const drogon::WebSocketConnectionPtr& wsConnPtr) override {
+                           const drogon::WebSocketConnectionPtr& wsConnPtr) override {
         std::cout << "[WS Server] ESP32 client connected from: " 
                   << wsConnPtr->peerAddr().toIp() << std::endl;
         
@@ -44,7 +44,7 @@ public:
         }
     }
 
-    // Called when the ESP32 sends text payloads (JSON containing heartbeats or sensor values)
+    // Called when the ESP32 sends text payloads (JSON containing connection status, heartbeats, or sensor values)
     void handleNewMessage(const drogon::WebSocketConnectionPtr& wsConnPtr, 
                           std::string&& message, 
                           const drogon::WebSocketMessageType& type) override {
@@ -52,7 +52,6 @@ public:
         if (type == drogon::WebSocketMessageType::Text) {
             std::cout << "[WS Server] Received raw text payload: " << message << std::endl;
 
-            // Check if the message looks like JSON (starts with '{')
             if (!message.empty() && message.front() == '{') {
                 Json::Value root;
                 Json::CharReaderBuilder builder;
@@ -61,51 +60,87 @@ public:
 
                 if (reader->parse(message.c_str(), message.c_str() + message.size(), &root, &errs)) {
                     
-                    // 1. Handle Heartbeat Message from ESP32
-                    if (root.isMember("type") && root["type"].asString() == "heartbeat") {
-                        std::string clientIp = wsConnPtr->peerAddr().toIp();
+                    std::string clientIp = wsConnPtr->peerAddr().toIp();
+                    auto dbClient = drogon::app().getDbClient();
+
+                    // 1. Handle Connection Status Message from ESP32
+                    if (root.isMember("status") && root["status"].asString() == "connected") {
+                        int sensorType = root.isMember("sensor_type") ? root["sensor_type"].asInt() : 1;
+                        std::cout << "[WS Server] Client handshake confirmed. IP: " << clientIp 
+                                  << " | Active Sensor Type: " << sensorType << std::endl;
+                    }
+                    // 2. Handle Heartbeat Message from ESP32
+                    else if (root.isMember("type") && root["type"].asString() == "heartbeat") {
                         std::cout << "[WS Server] Heartbeat received from IP: " << clientIp << std::endl;
 
-                        // Log heartbeat to PostgreSQL asynchronously
-                        auto dbClient = drogon::app().getDbClient();
+                        // Log heartbeat (Ensure device_logs table exists or route to appropriate table)
                         if (dbClient) {
                             dbClient->execSqlAsync(
                                 "INSERT INTO device_logs (ip_address, event_type, created_at) VALUES ($1, $2, NOW())",
-                                [](const drogon::orm::Result &result) {
-                                    // Successfully logged
-                                },
+                                [](const drogon::orm::Result &result) {},
                                 [](const drogon::orm::DrogonDbException &e) {
                                     std::cerr << "[DB Error] Failed to log heartbeat: " << e.base().what() << std::endl;
                                 },
                                 clientIp,
                                 "heartbeat"
                             );
-                        } else {
-                            std::cerr << "[DB Error] Database client not configured or unavailable." << std::endl;
                         }
                     }
-                    // 2. Handle Sensor Value payloads
+                    // 3. Handle Sensor Value Payloads (Button presses / readings)
                     else if (root.isMember("sensor_type") && root.isMember("value")) {
                         int sensorType = root["sensor_type"].asInt();
                         int value = root["value"].asInt();
+                        std::string deviceName = "ESP32_Device";
 
                         std::cout << ">>> Extracted Event -> Sensor Type: " << sensorType 
                                   << " | Value: " << value << std::endl;
+                        
+                        if (dbClient) {
+                            switch (sensorType) {
+                                case 1: // Temperature Sensor
+                                    std::cout << "Inserting Temperature Sensor value: " << value << std::endl;
+                                    dbClient->execSqlAsync(
+                                        "INSERT INTO device_temperature (device_name, ip_address, temperature_value, created_at) VALUES ($1, $2, $3, NOW())",
+                                        [](const drogon::orm::Result &r) {},
+                                        [](const drogon::orm::DrogonDbException &e) {
+                                            std::cerr << "[DB Error] Temperature insert failed: " << e.base().what() << std::endl;
+                                        },
+                                        deviceName, clientIp, value
+                                    );
+                                    break;
 
-                        switch (sensorType) {
-                            case 1:
-                                std::cout << "Handling Temperature Sensor value: " << value << std::endl;
-                                break;
-                            case 2:
-                                std::cout << "Handling CO2 Sensor value: " << value << std::endl;
-                                break;
-                            case 3:
-                                std::cout << "Handling Ultrasonic Sensor value: " << value << std::endl;
-                                break;
-                            default:
-                                std::cout << "Unknown sensor type received." << std::endl;
-                                break;
-                        }
+                                case 2: // CO2 Sensor
+                                    std::cout << "Inserting CO2 Sensor value: " << value << std::endl;
+                                    dbClient->execSqlAsync(
+                                        "INSERT INTO device_co2 (device_name, ip_address, co2_value, created_at) VALUES ($1, $2, $3, NOW())",
+                                        [](const drogon::orm::Result &r) {},
+                                        [](const drogon::orm::DrogonDbException &e) {
+                                            std::cerr << "[DB Error] CO2 insert failed: " << e.base().what() << std::endl;
+                                        },
+                                        deviceName, clientIp, value
+                                    );
+                                    break;
+
+                                case 3: // Ultrasonic Sensor
+                                    std::cout << "Inserting Ultrasonic Sensor value: " << value << std::endl;
+                                    dbClient->execSqlAsync(
+                                        "INSERT INTO devultrasensor (device_name, ip_address, distance_value, created_at) VALUES ($1, $2, $3, NOW())",
+                                        [](const drogon::orm::Result &r) {},
+                                        [](const drogon::orm::DrogonDbException &e) {
+                                            std::cerr << "[DB Error] Ultrasonic insert failed: " << e.base().what() << std::endl;
+                                        },
+                                        deviceName, clientIp, value
+                                    );
+                                    break;
+
+                                default:
+                                    std::cout << "Unknown sensor type received: " << sensorType << std::endl;
+                                    break;
+                            }
+                                   
+                        } else {
+                            std::cerr << "[DB Error] Database client not configured or unavailable." << std::endl;
+                        } 
                     } else {
                         std::cout << "Received unknown JSON format from client." << std::endl;
                     }
@@ -113,7 +148,6 @@ public:
                     std::cerr << "Failed to parse incoming JSON payload: " << errs << std::endl;
                 }
             } else {
-                // Handle plain text messages
                 std::cout << "[WS Server] Handling plain text message: " << message << std::endl;
             }
         }
@@ -187,9 +221,6 @@ int main(int argc, char* argv[]) {
     // Optional: Load configuration file (which includes PostgreSQL connection setup)
     drogon::app().loadConfigFile("../config.json");
 
-    // drogon::app().addListener("0.0.0.0", 8080);
-    // drogon::app().addListener("0.0.0.0", 81);
-    
     std::cout << "Drogon server running..." << std::endl;
     drogon::app().run();
     return 0;

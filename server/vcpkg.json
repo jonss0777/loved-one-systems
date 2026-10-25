@@ -2,7 +2,13 @@
   "name": "drogon-gstreamer-app",
   "version": "1.0.0",
   "dependencies": [
-    "drogon",
+    {
+      "name": "drogon",
+      "features": [
+        "postgres",
+        "orm"
+      ]
+    },
     "pkgconf",
     {
       "name": "gstreamer",
